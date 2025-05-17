@@ -1,0 +1,327 @@
+```json
+{
+  "name": "Email AI Auto-Responder v2",
+  "active": false,
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Email Trigger (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [-300, 0],
+      "parameters": {
+        "options": {
+          "unseen": true
+        },
+        "markSeen": true
+      },
+      "credentials": {
+        "imap": {
+          "id": "YOUR_IMAP_CREDENTIAL_ID",
+          "name": "IMAP info@yourdomain.com"
+        }
+      }
+    },
+    {
+      "id": "2",
+      "name": "HTML → Markdown",
+      "type": "n8n-nodes-base.markdown",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "html": "={{ $json[\"textHtml\"] }}"
+      }
+    },
+    {
+      "id": "3",
+      "name": "Email Classifier",
+      "type": "@n8n/n8n-nodes-langchain.textClassifier",
+      "typeVersion": 1,
+      "position": [300, 0],
+      "parameters": {
+        "inputText": "=Here is the email:\n\n{{$node[\"HTML → Markdown\"].json.parsed}}",
+        "options": {
+          "fallback": "Other",
+          "multiClass": false,
+          "enableAutoFixing": true,
+          "systemPromptTemplate": "Please classify the text provided by the user into one of the following categories: {categories}. Output only the JSON, do not explain."
+        },
+        "categories": {
+          "categories": [
+            {
+              "category": "Company Info",
+              "description": "Request for general information about the company"
+            },
+            {
+              "category": "Other",
+              "description": "All other emails"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "4",
+      "name": "Route Email",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [600, 0],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.category === 'Company Info' }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "5",
+      "name": "Archive Non-Company Emails",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [900, -100],
+      "parameters": {}
+    },
+    {
+      "id": "6",
+      "name": "Create Embedding",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [900, 50],
+      "parameters": {
+        "options": {}
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "id": "7",
+      "name": "Retrieve Context",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1,
+      "position": [1200, 50],
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolName": "company_knowledge_base",
+        "toolDescription": "Fetch relevant company information.",
+        "qdrantCollection": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.COLLECTION_NAME }}"
+        },
+        "includeDocumentMetadata": false
+      },
+      "credentials": {
+        "qdrantApi": {
+          "id": "YOUR_QDRANT_CREDENTIAL_ID",
+          "name": "Qdrant API"
+        }
+      }
+    },
+    {
+      "id": "8",
+      "name": "Assemble Prompt",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 1,
+      "position": [1500, 50],
+      "parameters": {
+        "mode": "mergeByIndex",
+        "propertyName": "context"
+      }
+    },
+    {
+      "id": "9",
+      "name": "Generate Reply",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [1800, 50],
+      "parameters": {
+        "promptType": "define",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are a concise business assistant. Respond in professional HTML, max 100 words."
+            },
+            {
+              "role": "system",
+              "message": "Context:\n\n{{ $node['Retrieve Context'].json.documents.join('\\n\\n') }}"
+            },
+            {
+              "role": "user",
+              "message": "Reply to this email:\n\n{{ $node['HTML → Markdown'].json.parsed }}"
+            }
+          ]
+        },
+        "outputFormat": "html"
+      }
+    },
+    {
+      "id": "10",
+      "name": "Send Reply",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2100, 50],
+      "parameters": {
+        "toEmail": "={{ $node['Email Trigger (IMAP)'].json.from }}",
+        "fromEmail": "={{ $node['Email Trigger (IMAP)'].json.to }}",
+        "subject": "={{ `Re: ${$node['Email Trigger (IMAP)'].json.subject}` }}",
+        "html": "={{ $node['Generate Reply'].json.text }}"
+      },
+      "credentials": {
+        "smtp": {
+          "id": "YOUR_SMTP_CREDENTIAL_ID",
+          "name": "SMTP info@yourdomain.com"
+        }
+      }
+    },
+    {
+      "id": "11",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "parameters": {}
+    },
+    {
+      "id": "12",
+      "name": "Notify Ops (Slack)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [600, 300],
+      "parameters": {
+        "text": "Error in *Email AI Auto-Responder v2*: {{ $json.error.message }}",
+        "channel": "#alerts"
+      },
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "1": {
+      "main": [
+        [
+          {
+            "node": "2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2": {
+      "main": [
+        [
+          {
+            "node": "3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3": {
+      "main": [
+        [
+          {
+            "node": "4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4": {
+      "main": [
+        [
+          {
+            "node": "6",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6": {
+      "main": [
+        [
+          {
+            "node": "7",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7": {
+      "main": [
+        [
+          {
+            "node": "8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8": {
+      "main": [
+        [
+          {
+            "node": "9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9": {
+      "main": [
+        [
+          {
+            "node": "10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11": {
+      "main": [
+        [
+          {
+            "node": "12",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "id": "email-ai-autoresponder-v2"
+}
+```
+
+**How to use**  
+1. Replace all `YOUR_…_CREDENTIAL_ID` with the IDs of your IMAP/SMTP, OpenAI, Qdrant & Slack credentials.  
+2. In your Workflow Settings, set environment variables:  
+   - `COLLECTION_NAME` to your Qdrant collection name.  
+3. Import this JSON into n8n, activate, and you’re ready to go! 🚀
